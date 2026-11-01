@@ -1,53 +1,70 @@
-# GeoSleuth Web
+# GSW — GeoSleuth Web
 
-Dépose un screenshot ou une photo, et regarde sa géolocalisation se construire en direct sur une carte : pays candidats avec les indices pour et contre, zones qui se resserrent, repères qui ont permis d'identifier le lieu, point final ou périmètre probable.
+Drop in a screenshot or a photo and watch its geolocation build up live on a map: candidate countries with the clues for and against each one, zones that keep narrowing down, the landmarks that identified the place, and a final point or a likely area.
 
-Le raisonnement est fait par [Claude Code](https://claude.com/claude-code) en mode headless avec la skill [geo-sleuth](https://github.com/Oldcircle/geo-sleuth) (OCR, recherche d'image inversée, OSM, satellite, Street View…). Cette app est l'interface : elle lance les analyses et affiche leur progression.
+The reasoning is done by [Claude Code](https://claude.com/claude-code) running headless with the [geo-sleuth](https://github.com/Oldcircle/geo-sleuth) skill (OCR, reverse image search, OSM, satellite imagery, Street View…). This app is the interface: it launches the analyses and shows their progress.
 
-## Fonctionnalités
+The interface is in French.
 
-- Lecture des métadonnées en premier : si la photo contient du GPS, le lieu s'affiche en quelques secondes.
-- Passe rapide pour un premier pays en environ 15 s, puis analyse approfondie relancée tant qu'aucun point à moins d'1 km n'est trouvé.
-- Pays possibles avec indices ✓/✗, pistes alternatives, étapes du zoom, repères avec l'extrait de photo correspondant.
-- Sélection d'une zone de l'image (panneau, enseigne, montagne…) pour lancer une analyse ciblée sur cet élément.
-- Terminal et onglet métadonnées intégrés.
-- Enregistrement et réimport du résultat (`.geosleuth.json`).
+## Example
 
-## Prérequis
+A screenshot of a roadside truck stop, with no metadata at all.
 
-- [Node.js](https://nodejs.org) 18 ou plus (aucun paquet npm)
-- [Claude Code](https://claude.com/claude-code) installé et connecté (`claude` dans le PATH)
-- La skill **geo-sleuth** installée dans `~/.claude/skills/geo-sleuth` (voir [son dépôt](https://github.com/Oldcircle/geo-sleuth))
-- [uv](https://docs.astral.sh/uv/) (scripts Python de la skill et lecture des métadonnées)
-- Linux recommandé : le nettoyage complet des processus lit `/proc`. Ailleurs l'app fonctionne, mais seul le processus `claude` est arrêté, pas les scripts qu'il a lancés.
+**1. The country, then the region.** GSW quickly settles on the United States, at 97%. Each clue is tied to the country it points to: English signage and a Chevron station, blue disabled parking spaces, California plates, palm trees on a dry plain. Mexico and Canada stay listed, with the clues that rule them out. The map then zooms into the western San Joaquin Valley, California.
 
-## Lancer
+![Analysis in progress: candidate countries with their clues and a first zone in California](docs/exemple-analyse.png)
+
+**2. The exact spot.** The analysis keeps going down to the truck stop itself: **Eagle Feather Trading Post (Chevron)**, on CA-41 near Kettleman City, within 50 m, with high confidence. The landmarks that identified it are pinned on the map: the station, and the telecom tower found in OpenStreetMap. Clicking a landmark shows the part of the photo where it appears.
+
+![Result: final point on the truck stop, with the landmarks that identified it](docs/exemple-resultat.png)
+
+The **Métadonnées** tab at the bottom confirms there was nothing to read in the file: everything came from the image.
+
+## Features
+
+- Metadata is read first: if the photo has GPS coordinates, the place shows up within seconds.
+- A quick pass gives a first country in about 15 s, then a deep analysis is resumed for as long as no point within 1 km has been found.
+- Candidate countries with ✓/✗ clues, alternative leads, zoom steps, and landmarks with the matching crop of the photo.
+- Select an area of the image (a sign, a shop front, a mountain…) to launch an analysis focused on that element.
+- Built-in terminal and metadata tab.
+- Save and re-import results (`.geosleuth.json`).
+
+## Requirements
+
+- [Node.js](https://nodejs.org) 18 or later (no npm packages)
+- [Claude Code](https://claude.com/claude-code) installed and logged in (`claude` on your PATH)
+- The **geo-sleuth** skill installed in `~/.claude/skills/geo-sleuth` (see [its repository](https://github.com/Oldcircle/geo-sleuth))
+- [uv](https://docs.astral.sh/uv/) (for the skill's Python scripts and for reading metadata)
+- Linux recommended: full process cleanup reads `/proc`. Elsewhere the app works, but only the `claude` process itself is stopped, not the scripts it launched.
+
+## Running
 
 ```bash
 node server.js
-# puis ouvrir http://localhost:8787
+# then open http://localhost:8787
 ```
 
-`PORT` change le port, `CLAUDE_BIN` le chemin de la commande `claude`.
+`PORT` sets the port, `CLAUDE_BIN` the path to the `claude` command.
 
-Tests (avec un faux `claude`, sans consommer de quota) :
+Tests (with a fake `claude`, so no quota is used):
 
 ```bash
 node test.js
 ```
 
-## Sécurité et vie privée
+## Security and privacy
 
-- Les analyses lancent `claude` avec `--dangerously-skip-permissions` : un mode headless ne peut pas répondre aux demandes d'autorisation. Le serveur écoute uniquement sur `127.0.0.1`. **Ne l'expose pas sur un réseau.**
-- Les images sont envoyées à Claude (Anthropic) et, via la skill, à des services de recherche d'image inversée (Baidu, Yandex) et à des API cartographiques. N'y mets pas d'images que tu ne veux pas partager.
-- Chaque analyse travaille dans un dossier temporaire `geosleuth-*`, supprimé à la fin (ou au rechargement de la page, ou au redémarrage du serveur) avec l'historique de session Claude correspondant.
-- Une analyse consomme le quota de ton compte Claude, d'autant plus que l'analyse approfondie peut être relancée jusqu'à deux fois.
+- Analyses run `claude` with `--dangerously-skip-permissions`, because a headless run cannot answer permission prompts. The server only listens on `127.0.0.1`. **Do not expose it on a network.**
+- Images are sent to Claude (Anthropic) and, through the skill, to reverse image search services (Baidu, Yandex) and map APIs. Don't use images you don't want to share.
+- Each analysis works in a temporary `geosleuth-*` folder, deleted when it ends (or when the page is reloaded, or the server restarts) together with the matching Claude session transcript.
+- Analyses use your Claude account's quota, all the more since the deep analysis can be resumed up to twice.
 
-## Fichiers
+## Files
 
-| Fichier | Rôle |
+| File | Purpose |
 |---|---|
-| `server.js` | Serveur HTTP, lancement et nettoyage des analyses, protocole `@@GEO` |
-| `index.html` | Toute l'interface (Leaflet chargé depuis unpkg) |
-| `meta.py` | Lecture de toutes les métadonnées de l'image |
-| `test.js` | Tests de bout en bout avec un faux `claude` |
+| `server.js` | HTTP server, launching and cleaning up analyses, `@@GEO` protocol |
+| `index.html` | The whole interface (Leaflet loaded from unpkg) |
+| `meta.py` | Reads every metadata field of the image |
+| `test.js` | End-to-end tests with a fake `claude` |
+| `docs/` | Screenshots used in this README |
