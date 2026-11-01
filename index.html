@@ -1,0 +1,706 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GeoSleuth Web</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<style>
+  :root { --bg:#0f1115; --glass:rgba(23,26,33,.72); --card:#1f232c; --line:rgba(255,255,255,.09); --text:#e6e6e6; --muted:#8a8f98;
+    --accent:#ff6b3d; --alt:#3dd6ff; --ok:#3ddc84; --warn:#ffd23d; --bad:#ff5470; --term-h:0px; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--text); font:14px system-ui,sans-serif; overflow:hidden; }
+  #map { position:fixed; inset:0; }
+  .leaflet-container { background:var(--bg); }
+  button { font:inherit; color:inherit; }
+  .glass { background:var(--glass); backdrop-filter:blur(14px) saturate(1.2); -webkit-backdrop-filter:blur(14px) saturate(1.2);
+    border:1px solid var(--line); border-radius:14px; box-shadow:0 10px 40px rgba(0,0,0,.45); }
+  [hidden] { display:none !important; }
+
+  /* landing: only the box is frosted, the map around it stays sharp */
+  #landing { position:fixed; inset:0; display:grid; place-items:center; z-index:1000; pointer-events:none; padding:16px; }
+  #drop { pointer-events:auto; width:min(560px,100%); height:300px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+    cursor:pointer; text-align:center; color:var(--muted); transition:transform .25s, border-color .25s, opacity .35s;
+    background:rgba(23,26,33,.35); backdrop-filter:blur(18px) saturate(1.3); -webkit-backdrop-filter:blur(18px) saturate(1.3); }
+  #drop svg { width:56px; height:56px; color:var(--accent); }
+  #drop strong { color:var(--text); font-size:17px; font-weight:600; }
+  #drop.over { border-color:var(--accent); transform:scale(1.02); }
+  #drop:focus-visible { outline:2px solid var(--accent); outline-offset:3px; }
+  #landing.modal { pointer-events:auto; } /* reopened over a running analysis: click outside the box to go back */
+  #landing.leaving #drop { opacity:0; transform:scale(.92); }
+
+  /* results panel */
+  #panel { position:fixed; z-index:900; top:12px; left:12px; width:380px; bottom:calc(var(--term-h) + 12px); overflow:auto; padding:14px;
+    display:flex; flex-direction:column; gap:14px; transition:bottom .1s; }
+  #thumb { width:100%; max-height:150px; object-fit:cover; border-radius:8px; cursor:zoom-in; display:block; }
+  #status { font-weight:600; }
+  #result { padding:10px; border-radius:8px; background:rgba(255,255,255,.06); }
+  #result:empty { display:none; }
+  h2 { font-size:11px; margin:0 0 6px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  section:empty { display:none; }
+  .country { background:rgba(255,255,255,.05); border-radius:8px; padding:10px; margin-bottom:8px; cursor:pointer; border-left:3px solid var(--accent); }
+  .country.alt { border-left-color:var(--alt); }
+  .country:hover { background:rgba(255,255,255,.09); }
+  .country .head { display:flex; justify-content:space-between; font-weight:600; }
+  .country .tag { font-size:11px; color:var(--alt); font-weight:500; margin-left:6px; }
+  .bar { height:5px; border-radius:3px; background:#333; margin:6px 0; overflow:hidden; }
+  .bar i { display:block; height:100%; background:var(--accent); transition:width .6s; }
+  .country.alt .bar i { background:var(--alt); }
+  ul { margin:0; padding:0; list-style:none; font-size:13px; line-height:1.4; }
+  li { padding:2px 0 2px 18px; text-indent:-18px; }
+  li.for::before { content:'✓  '; color:var(--ok); } li.against::before { content:'✗  '; color:var(--bad); } li.gen::before { content:'•  '; color:var(--muted); }
+  .steps li, #landmarks li { cursor:pointer; } .steps li:hover, #landmarks li:hover { color:var(--warn); } .steps li.alt { color:var(--alt); }
+  #landmarks small { color:var(--muted); display:block; }
+
+  /* map decorations */
+  .lm-pop img, .fc img { display:block; max-width:100%; max-height:220px; border-radius:6px; margin-bottom:6px; }
+  .lm-icon { font-size:22px; line-height:28px; text-align:center; background:#171a21cc; border:2px solid var(--warn); border-radius:50%; }
+  #loupe { position:fixed; z-index:950; width:64px; height:64px; margin:-32px 0 0 -32px; pointer-events:none; opacity:0; color:var(--warn);
+    filter:drop-shadow(0 2px 8px rgba(0,0,0,.6)); }
+  #loupe.go { animation:search var(--dur,3s) ease-in-out forwards; }
+  @keyframes search {
+    0%   { opacity:0; transform:scale(.4) rotate(0deg) translateX(0) rotate(0deg); }
+    12%  { opacity:1; transform:scale(1) rotate(0deg) translateX(0) rotate(0deg); }
+    30%  { transform:scale(1) rotate(90deg) translateX(18px) rotate(-90deg); }
+    50%  { transform:scale(1) rotate(220deg) translateX(18px) rotate(-220deg); }
+    70%  { transform:scale(1) rotate(360deg) translateX(18px) rotate(-360deg); }
+    85%  { opacity:1; transform:scale(1.1) rotate(360deg) translateX(0) rotate(-360deg); }
+    100% { opacity:0; transform:scale(1.7) rotate(360deg) translateX(0) rotate(-360deg); }
+  }
+  @media (prefers-reduced-motion:reduce) { #loupe.go { animation:none; } }
+
+  /* VS Code-like dock + terminal */
+  #dock { position:fixed; z-index:960; right:12px; bottom:calc(var(--term-h) + 26px); display:flex; gap:6px; padding:5px; border-radius:10px; transition:bottom .1s; }
+  #dock button { width:36px; height:36px; display:grid; place-items:center; border:0; border-radius:7px; background:transparent; cursor:pointer; color:var(--muted); position:relative; }
+  #dock button:hover:not(:disabled), #dock button[aria-pressed="true"] { background:rgba(255,255,255,.1); color:var(--text); }
+  #dock button:disabled { opacity:.35; cursor:default; }
+  #dock svg { width:20px; height:20px; }
+  #dock .badge { position:absolute; top:3px; right:3px; width:8px; height:8px; border-radius:50%; background:var(--accent); }
+  #term { position:fixed; z-index:970; left:0; right:0; bottom:0; height:var(--term-h); display:flex; flex-direction:column;
+    background:#11141a; border-top:1px solid var(--line); }
+  #term .grip { height:6px; margin-top:-3px; cursor:ns-resize; flex-shrink:0; }
+  #term .grip:hover, #term .grip.dragging { background:var(--alt); }
+  #term header { display:flex; align-items:center; gap:16px; padding:2px 12px 6px; font-size:11px; letter-spacing:.06em; color:var(--muted); }
+  #term .tab { border:0; background:none; cursor:pointer; color:var(--muted); font:inherit; letter-spacing:inherit; padding:0 0 3px; border-bottom:1px solid transparent; }
+  #term .tab:hover { color:var(--text); } #term .tab[aria-selected="true"] { color:var(--text); border-bottom-color:var(--text); }
+  #termClose { margin-left:auto; border:0; background:none; cursor:pointer; color:var(--muted); font-size:16px; }
+  #metaBody { flex:1; overflow:auto; padding:0 12px 12px; font-size:12px; }
+  #metaBody h3 { font-size:11px; letter-spacing:.06em; text-transform:uppercase; color:var(--muted); margin:12px 0 4px; }
+  #metaBody table { border-collapse:collapse; width:100%; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  #metaBody td { padding:3px 10px 3px 0; border-bottom:1px solid var(--line); vertical-align:top; word-break:break-word; }
+  #metaBody td:first-child { color:#9cdcfe; white-space:nowrap; width:1%; }
+  #metaBody .gps { margin-top:10px; padding:8px 10px; border-radius:8px; background:rgba(61,220,132,.1); color:var(--ok); font-weight:600; }
+  #metaBody .gps a, #metaCard a { color:var(--accent); }
+  #metaBody .none { margin-top:10px; color:var(--muted); }
+  #metaCard { padding:10px; border-radius:8px; background:rgba(61,220,132,.1); border:1px solid rgba(61,220,132,.3); line-height:1.5; }
+  #metaCard.nogps { background:none; border:0; padding:0; color:var(--muted); font-size:12px; }
+  #metaCard:empty { display:none; }
+  .gps-icon { font-size:26px; line-height:30px; text-align:center; filter:drop-shadow(0 2px 4px rgba(0,0,0,.6)); }
+  #termBody { flex:1; overflow:auto; padding:0 12px 10px; font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; word-break:break-word; }
+  #termBody .tool { color:#7f8ea3; } #termBody .tool::before { content:'$ '; color:var(--ok); }
+  #termBody .marker { color:#c29b5a; } #termBody .error { color:var(--bad); } #termBody .tag { color:var(--alt); }
+
+  /* image viewer with box selection */
+  #viewer { position:fixed; inset:0; z-index:1100; display:grid; place-items:center; padding:16px;
+    background:rgba(8,10,14,.55); backdrop-filter:blur(10px); -webkit-backdrop-filter:blur(10px); }
+  #viewer .box { max-width:min(1200px,96vw); padding:14px; display:flex; flex-direction:column; gap:10px; }
+  #viewer .hint { color:var(--muted); font-size:13px; display:flex; justify-content:space-between; gap:12px; }
+  #viewer .hint button { border:0; background:none; cursor:pointer; color:var(--muted); font-size:18px; line-height:1; }
+  #stage { position:relative; overflow:hidden; border-radius:8px; user-select:none; touch-action:none; cursor:crosshair; align-self:center; }
+  #vimg { display:block; max-width:100%; max-height:70vh; border-radius:8px; }
+  #sel { position:absolute; border:2px solid var(--warn); background:rgba(255,210,61,.12); box-shadow:0 0 0 9999px rgba(0,0,0,.45); border-radius:3px; }
+  #focusForm { display:flex; gap:8px; }
+  #focusForm input { flex:1; min-width:0; padding:9px 10px; border-radius:8px; border:1px solid var(--line); background:rgba(0,0,0,.3); color:var(--text); font:inherit; }
+  .btn { padding:9px 14px; border-radius:8px; border:0; cursor:pointer; font-weight:600; background:var(--accent); color:#160b06; }
+  .btn.ghost { background:rgba(255,255,255,.08); color:var(--text); border:1px solid var(--line); font-weight:500; }
+  .btn.ghost:hover { background:rgba(255,255,255,.14); }
+  #pasteMsg { min-height:1em; color:var(--muted); }
+  .btn:disabled { opacity:.4; cursor:default; }
+
+  /* focus verdict cards */
+  #focusCards { position:fixed; z-index:980; top:12px; right:12px; width:330px; max-height:calc(100% - var(--term-h) - 90px); overflow:auto; display:flex; flex-direction:column; gap:10px; }
+  .fc { padding:12px; animation:pop .35s ease-out; }
+  @keyframes pop { from { opacity:0; transform:translateY(-8px) scale(.97); } }
+  .fc header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:11px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); }
+  .fc header button { border:0; background:none; cursor:pointer; color:var(--muted); font-size:16px; }
+  .chain { display:flex; flex-wrap:wrap; align-items:center; gap:4px; font-weight:600; margin:4px 0 8px; }
+  .chain span { background:rgba(255,255,255,.07); padding:3px 8px; border-radius:6px; }
+  .chain i { color:var(--muted); font-style:normal; }
+  .verdict { display:inline-block; font-size:12px; font-weight:600; padding:2px 8px; border-radius:20px; margin-bottom:6px; }
+  .verdict.useful { background:rgba(61,220,132,.15); color:var(--ok); } .verdict.weak { background:rgba(255,210,61,.15); color:var(--warn); }
+  .verdict.irrelevant { background:rgba(138,143,152,.18); color:var(--muted); } .verdict.pending { background:rgba(61,214,255,.12); color:var(--alt); }
+  .fc p { margin:0; font-size:13px; line-height:1.45; }
+
+  #toast { position:fixed; z-index:1200; left:50%; bottom:calc(var(--term-h) + 28px); transform:translate(-50%, 20px); opacity:0; pointer-events:none;
+    padding:10px 16px; font-weight:600; transition:opacity .25s, transform .25s; }
+  #toast.show { opacity:1; transform:translate(-50%, 0); }
+  .btn.sent { background:var(--ok); }
+  @media (max-width:800px) {
+    #panel { width:auto; right:12px; bottom:auto; max-height:42vh; }
+    #focusCards { top:auto; bottom:calc(var(--term-h) + 80px); left:12px; right:12px; width:auto; max-height:40vh; }
+  }
+</style>
+</head>
+<body>
+<div id="map" aria-label="Carte"></div>
+
+<div id="landing">
+  <div id="drop" class="glass" tabindex="0" role="button" aria-label="Envoyer un screenshot à géolocaliser">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M12 15V4M7 9l5-5 5 5"/><path d="M4 15v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/></svg>
+    <strong>Dépose un screenshot ici</strong>
+    <span>ou clique pour choisir un fichier · PNG, JPEG, WebP · ou un résultat enregistré (.geosleuth.json)</span>
+    <button type="button" id="pasteBtn" class="btn ghost">📋 Coller depuis le presse-papiers</button>
+    <small id="pasteMsg" aria-live="polite"></small>
+  </div>
+</div>
+<input id="file" type="file" accept="image/png,image/jpeg,image/webp,.json,application/json" hidden>
+
+<aside id="panel" class="glass" hidden>
+  <img id="thumb" alt="Image analysée (cliquer pour l'ouvrir)">
+  <div id="status" aria-live="polite"></div>
+  <div id="metaCard"></div>
+  <div id="result"></div>
+  <section id="countries"></section>
+  <section id="general"></section>
+  <section id="landmarks"></section>
+  <section id="steps"></section>
+</aside>
+
+<div id="focusCards" aria-live="polite"></div>
+<div id="toast" class="glass" role="status"></div>
+
+<svg id="loupe" viewBox="0 0 64 64" aria-hidden="true">
+  <circle cx="26" cy="26" r="16" fill="rgba(255,210,61,.15)" stroke="currentColor" stroke-width="5"/>
+  <path d="M38 38l16 16" stroke="currentColor" stroke-width="7" stroke-linecap="round"/>
+  <path d="M18 20a10 10 0 0 1 8-5" stroke="#fff" stroke-opacity=".7" stroke-width="3" fill="none" stroke-linecap="round"/>
+</svg>
+
+<nav id="dock" class="glass" aria-label="Outils">
+  <button id="btnNew" title="Nouvelle analyse" aria-label="Nouvelle analyse">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></button>
+  <button id="btnSave" title="Enregistrer le résultat" aria-label="Enregistrer le résultat" disabled>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M4 17v2a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-2"/></svg></button>
+  <button id="btnImage" title="Image d'origine · sélectionner une zone à creuser" aria-label="Voir l'image et sélectionner une zone" disabled>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><path d="M21 16l-5-5-9 9"/></svg></button>
+  <button id="btnMeta" title="Métadonnées de l'image" aria-label="Voir les métadonnées de l'image" disabled>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9-9-9z"/><circle cx="8" cy="8" r="1.5"/></svg></button>
+  <button id="btnTerm" title="Terminal (Ctrl+`)" aria-label="Afficher le terminal" aria-pressed="false" disabled>
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 17l6-5-6-5M12 19h8"/></svg></button>
+</nav>
+
+<div id="term" hidden>
+  <div class="grip" aria-hidden="true"></div>
+  <header role="tablist"><button class="tab" role="tab" id="tabTerm" aria-selected="true">TERMINAL</button>
+    <button class="tab" role="tab" id="tabMeta" aria-selected="false">MÉTADONNÉES</button><button id="termClose" aria-label="Fermer le panneau">×</button></header>
+  <div id="termBody" role="log"></div>
+  <div id="metaBody" hidden></div>
+</div>
+
+<div id="viewer" hidden>
+  <div class="box glass" role="dialog" aria-modal="true" aria-label="Image d'origine">
+    <div class="hint"><span>Trace un rectangle sur l'élément à faire creuser (panneau, enseigne, montagne…)</span><button id="vClose" aria-label="Fermer">×</button></div>
+    <div id="stage"><img id="vimg" alt="Image d'origine" draggable="false"><div id="sel" hidden></div></div>
+    <form id="focusForm">
+      <input id="focusNote" maxlength="300" placeholder="Qu'est-ce qui t'intrigue ici ? (optionnel)" aria-label="Note pour l'analyse ciblée">
+      <button class="btn" id="focusGo" disabled>Creuser cet élément</button>
+    </form>
+  </div>
+</div>
+
+<script>
+const map = L.map('map', { worldCopyJump: true, zoomControl: false, minZoom: 2, maxBounds: [[-85, -720], [85, 720]], maxBoundsViscosity: 1 }).setView([25, 5], 3);
+L.control.zoom({ position: 'topright' }).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}',
+  { attribution: 'Tiles &copy; Esri', maxZoom: 19, maxNativeZoom: 16 }).addTo(map);
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 19, minZoom: 12, opacity: 0.85 }).addTo(map); // satellite only once zoomed in
+L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}',
+  { maxZoom: 19, maxNativeZoom: 16, pane: 'shadowPane' }).addTo(map); // place labels above the colored countries
+
+let world = null, countryLayer = null;
+const areaLayers = L.featureGroup().addTo(map), altLayers = L.featureGroup().addTo(map), finalLayer = L.featureGroup().addTo(map), landmarkLayer = L.featureGroup().addTo(map);
+const worldReady = fetch('https://cdn.jsdelivr.net/gh/nvkelso/natural-earth-vector@v5.1.2/geojson/ne_50m_admin_0_countries.geojson')
+  .then(r => r.json()).then(g => world = g);
+
+// Panel state, rebuilt from markers
+let weights = {}, clues = [], steps = [], countryBounds = {}, landmarks = [], finalAt = null;
+
+const ALT_RATIO = 0.5; // runner-up kept visible when its weight is at least half the leader's
+const FLY = { country: 3.5, area: 3, final: 4 }; // seconds per zoom animation
+const PAUSE_MS = 2000; // hold each step on screen before the next one
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const iso = p => (p.ISO_A2_EH && p.ISO_A2_EH !== '-99') ? p.ISO_A2_EH : p.ISO_A2;
+const names = new Intl.DisplayNames(['fr'], { type: 'region' });
+const countryName = cc => { try { return names.of(cc); } catch { return cc; } };
+const flag = cc => /^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map(c => 0x1F1A5 + c.charCodeAt(0))) : '🏳️';
+const leader = () => Object.keys(weights).sort((a, b) => weights[b] - weights[a])[0];
+const isAlt = cc => cc !== leader() && (weights[cc] || 0) >= ALT_RATIO * Math.max(...Object.values(weights));
+const setStatus = t => $('status').textContent = t;
+const showResult = html => $('result').innerHTML = html;
+
+// ---------- terminal ----------
+const store = { get: k => { try { return localStorage.getItem(k); } catch { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+let termH = +store.get('termH') || 260;
+let termTab = 'term';
+function termOpen(open, tab = termTab) {
+  termTab = tab;
+  $('term').hidden = !open;
+  $('termBody').hidden = tab !== 'term'; $('metaBody').hidden = tab !== 'meta';
+  $('tabTerm').setAttribute('aria-selected', tab === 'term'); $('tabMeta').setAttribute('aria-selected', tab === 'meta');
+  $('btnTerm').setAttribute('aria-pressed', open && tab === 'term'); $('btnMeta').setAttribute('aria-pressed', open && tab === 'meta');
+  if (open && tab === 'term') $('btnTerm').querySelector('.badge')?.remove();
+  document.documentElement.style.setProperty('--term-h', open ? termH + 'px' : '0px');
+  if (open) $('termBody').scrollTop = $('termBody').scrollHeight;
+}
+function term(text, cls = '', tag = '') {
+  const body = $('termBody'), stick = body.scrollTop + body.clientHeight >= body.scrollHeight - 20;
+  const d = document.createElement('div'); d.className = cls;
+  if (tag) { const t = document.createElement('span'); t.className = 'tag'; t.textContent = `[${tag}] `; d.append(t); }
+  d.append(text);
+  body.append(d);
+  while (body.childElementCount > 3000) body.firstChild.remove(); // keep the DOM bounded on very long runs
+  if (stick) body.scrollTop = body.scrollHeight;
+  if (($('term').hidden || termTab !== 'term') && !$('btnTerm').querySelector('.badge')) $('btnTerm').insertAdjacentHTML('beforeend', '<span class="badge"></span>');
+}
+// dock icon: open on its tab, or close if that tab is already showing
+const toggleTab = tab => termOpen($('term').hidden || termTab !== tab, tab);
+$('btnTerm').onclick = () => toggleTab('term');
+$('btnMeta').onclick = () => toggleTab('meta');
+$('tabTerm').onclick = () => termOpen(true, 'term');
+$('tabMeta').onclick = () => termOpen(true, 'meta');
+$('termClose').onclick = () => termOpen(false);
+document.addEventListener('keydown', e => { if (e.ctrlKey && e.key === '`' && !$('btnTerm').disabled) { e.preventDefault(); toggleTab('term'); } });
+$('term').querySelector('.grip').onpointerdown = e => {
+  const grip = e.currentTarget; grip.setPointerCapture(e.pointerId); grip.classList.add('dragging');
+  grip.onpointermove = ev => { termH = Math.max(120, Math.min(innerHeight - 120, innerHeight - ev.clientY)); termOpen(true); };
+  grip.onpointerup = () => { grip.onpointermove = grip.onpointerup = null; grip.classList.remove('dragging'); store.set('termH', termH); };
+};
+
+// ---------- what part of the map is not covered by the panel / terminal ----------
+function visible() {
+  const p = $('panel').hidden ? null : $('panel').getBoundingClientRect();
+  const wide = p && p.height > innerHeight / 2; // desktop: panel on the left; mobile: panel on top
+  return { l: wide ? p.right + 20 : 20, t: p && !wide ? p.bottom + 20 : 20, r: innerWidth - 20, b: innerHeight - (parseInt(getComputedStyle(document.documentElement).getPropertyValue('--term-h')) || 0) - 20 };
+}
+const pad = () => { const v = visible(); return { paddingTopLeft: [v.l, v.t], paddingBottomRight: [innerWidth - v.r, innerHeight - v.b] }; };
+let instant = false; // replaying a saved result: jump, don't animate
+function fly(bounds, duration, extra = {}) {
+  if (instant) return map.fitBounds(bounds, { ...pad(), ...extra, animate: false });
+  loupe(duration);
+  map.flyToBounds(bounds, { duration, ...pad(), ...extra });
+}
+function loupe(duration) {
+  const v = visible(), el = $('loupe');
+  el.style.left = (v.l + v.r) / 2 + 'px'; el.style.top = (v.t + v.b) / 2 + 'px';
+  el.style.setProperty('--dur', duration + 's');
+  el.classList.remove('go'); void el.getBoundingClientRect(); el.classList.add('go'); // restart the animation
+}
+
+// ---------- image metadata ----------
+const metaLayer = L.featureGroup().addTo(map);
+// "2024:07:14 15:32:10" -> "14/07/2024 15:32"
+const exifDate = d => { const m = /^(\d{4}):(\d\d):(\d\d) (\d\d:\d\d)/.exec(d || ''); return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}` : d || ''; };
+// Country containing a point, from the Natural Earth polygons already loaded (ray casting, [lon, lat] rings)
+function countryAt(lat, lon) {
+  const inRing = r => { let inside = false; for (let i = 0, j = r.length - 1; i < r.length; j = i++) { const [xi, yi] = r[i], [xj, yj] = r[j];
+    if ((yi > lat) !== (yj > lat) && lon < (xj - xi) * (lat - yi) / (yj - yi) + xi) inside = !inside; } return inside; };
+  const inPoly = p => inRing(p[0]) && !p.slice(1).some(inRing); // outer ring minus holes
+  const f = world?.features.find(f => f.geometry && (f.geometry.type === 'Polygon' ? inPoly(f.geometry.coordinates) : f.geometry.coordinates.some(inPoly)));
+  return f ? iso(f.properties) : null;
+}
+async function showMeta(m) {
+  const t = m.tags || {}, cam = [t['Image.Make'], t['Image.Model']].filter(Boolean).join(' '), when = exifDate(t['Exif.DateTimeOriginal'] || t['Image.DateTime']);
+  const exifKeys = Object.keys(t).filter(k => !k.startsWith('Fichier.'));
+  // bottom tab: every field, grouped
+  const groups = {};
+  for (const [k, v] of Object.entries(t)) { const [g, ...rest] = k.split('.'); (groups[g] ||= []).push([rest.join('.') || g, Array.isArray(v) ? v.join(', ') : v]); }
+  const gmaps = g => `https://www.google.com/maps?q=${g.lat},${g.lon}`;
+  $('metaBody').innerHTML = (m.error ? `<p class="none">Impossible de lire les métadonnées : ${esc(m.error)}</p>` : '')
+    + (m.format ? `<h3>Fichier</h3><table><tr><td>format</td><td>${esc(m.format)}</td></tr><tr><td>taille</td><td>${esc((m.size || []).join(' × '))} px</td></tr><tr><td>mode</td><td>${esc(m.mode)}</td></tr></table>` : '')
+    + (m.gps ? `<div class="gps">📍 GPS : ${m.gps.lat}, ${m.gps.lon}${m.gps.alt != null ? ` · ${esc(m.gps.alt)} m` : ''}${m.gps.direction != null ? ` · objectif vers ${esc(m.gps.direction)}°` : ''} · <a target="_blank" rel="noopener" href="${gmaps(m.gps)}">Google Maps</a></div>` : '')
+    + (!exifKeys.length && !m.error ? '<p class="none">Aucune métadonnée EXIF. C\'est normal pour une capture d\'écran ou une image passée par un réseau social ou une messagerie.</p>' : '')
+    + Object.entries(groups).map(([g, rows]) => `<h3>${esc(g)}</h3><table>${rows.map(([k, v]) => `<tr><td>${esc(k)}</td><td>${esc(v)}</td></tr>`).join('')}</table>`).join('');
+  if (!m.gps) {
+    $('metaCard').className = 'nogps';
+    $('metaCard').innerHTML = `🛰️ Pas de position GPS dans les métadonnées${cam ? ' · ' + esc(cam) : ''} · <a href="#" data-meta>détails</a>`;
+    return;
+  }
+  await worldReady;
+  const { lat, lon } = m.gps, cc = countryAt(lat, lon);
+  const where = cc ? `${flag(cc)} ${esc(countryName(cc))}` : '🌍 hors des frontières connues';
+  $('metaCard').className = '';
+  $('metaCard').innerHTML = `📍 <b>Position trouvée dans les métadonnées</b><br>${where} · ${lat.toFixed(5)}, ${lon.toFixed(5)}
+    ${cam || when ? `<br><small>${esc([cam, when].filter(Boolean).join(' · '))}</small>` : ''}
+    <br><a target="_blank" rel="noopener" href="${gmaps(m.gps)}">Google Maps</a> · <a href="#" data-meta>toutes les métadonnées</a>`;
+  metaLayer.clearLayers();
+  L.marker([lat, lon], { icon: L.divIcon({ className: 'gps-icon', html: '📍', iconSize: [32, 32], iconAnchor: [16, 30] }), zIndexOffset: 1000 })
+    .bindTooltip(`${where} · GPS des métadonnées`, { permanent: true, direction: 'right', offset: [12, -14] }).addTo(metaLayer);
+  if (m.gps.direction != null) { // lens heading written by some phones: a short line toward what the camera saw
+    const r = m.gps.direction * Math.PI / 180, d = 0.0012;
+    L.polyline([[lat, lon], [lat + d * Math.cos(r), lon + d * Math.sin(r) / Math.cos(lat * Math.PI / 180)]], { color: '#3ddc84', weight: 4, dashArray: '2 6' }).addTo(metaLayer);
+  }
+  setStatus('📍 Position GPS lue dans les métadonnées — vérification en cours');
+  fly(L.latLng(lat, lon).toBounds(600), FLY.final, { maxZoom: 17 });
+}
+$('metaCard').onclick = e => { if (e.target.matches('[data-meta]')) { e.preventDefault(); termOpen(true, 'meta'); } };
+
+// ---------- results panel ----------
+function renderPanel() {
+  $('landmarks').innerHTML = landmarks.length ? '<h2>Repères qui ont identifié le lieu</h2><ul>' + landmarks.map((l, i) =>
+    `<li data-i="${i}">${esc(l.emoji || '📌')} ${esc(l.label)}${l.why ? `<small>${esc(l.why)}</small>` : ''}</li>`).join('') + '</ul>' : '';
+  const ccs = Object.keys(weights).sort((a, b) => weights[b] - weights[a]);
+  $('countries').innerHTML = ccs.length ? '<h2>Pays possibles</h2>' + ccs.map(cc => {
+    const items = clues.flatMap(c => (c.for || []).includes(cc) ? [`<li class="for">${esc(c.text)}</li>`]
+      : (c.against || []).includes(cc) ? [`<li class="against">${esc(c.text)}</li>`] : []);
+    const pct = Math.round((weights[cc] || 0) * 100);
+    return `<div class="country${isAlt(cc) ? ' alt' : ''}" data-cc="${esc(cc)}">
+      <div class="head"><span>${flag(cc)} ${esc(countryName(cc))}${isAlt(cc) ? '<span class="tag">piste alternative</span>' : ''}</span><span>${pct}%</span></div>
+      <div class="bar"><i style="width:${pct}%"></i></div><ul>${items.join('') || '<li class="gen">pas encore d\'indice dédié</li>'}</ul></div>`;
+  }).join('') : '';
+  const general = clues.filter(c => !(c.for || []).length && !(c.against || []).length);
+  $('general').innerHTML = general.length ? '<h2>Indices généraux</h2><ul>' + general.map(c => `<li class="gen">${esc(c.text)}</li>`).join('') + '</ul>' : '';
+  $('steps').innerHTML = steps.length ? '<h2>Étapes du zoom</h2><ul class="steps">' +
+    steps.map((s, i) => `<li data-i="${i}" class="${s.alt ? 'alt' : 'gen'}">${s.alt ? '↳ alt : ' : ''}${esc(s.label)}</li>`).join('') + '</ul>' : '';
+}
+$('landmarks').onclick = e => { const l = landmarks[e.target.closest('li')?.dataset.i]; l && fly(L.latLng(l.lat, l.lon).toBounds(150), 1.5); };
+$('countries').onclick = e => { const cc = e.target.closest('.country')?.dataset.cc; countryBounds[cc] && fly(countryBounds[cc], 1.5); };
+$('steps').onclick = e => { const s = steps[e.target.closest('li')?.dataset.i]; s && fly(s.bounds, 1.5); };
+
+// Bounds of a country's biggest polygon: France without Guiana and Réunion, Norway without Svalbard, etc.
+function mainBounds(layer) {
+  const ll = layer.getLatLngs(), parts = ll.length && Array.isArray(ll[0][0]) ? ll.map(p => p[0]) : [ll[0]];
+  const size = b => (b.getNorth() - b.getSouth()) * (b.getEast() - b.getWest());
+  return parts.map(p => L.latLngBounds(p)).reduce((a, b) => size(b) > size(a) ? b : a);
+}
+
+async function showCountries() {
+  await worldReady;
+  if (countryLayer) map.removeLayer(countryLayer);
+  const max = Math.max(...Object.values(weights));
+  countryLayer = L.geoJSON(world, {
+    filter: f => iso(f.properties) in weights, // non-candidates are not drawn at all
+    style: f => { const k = iso(f.properties), w = weights[k] / max, zoomed = areaLayers.getLayers().length;
+      if (isAlt(k)) return { color: '#3dd6ff', weight: 2.5, dashArray: '6 4', fillColor: '#3dd6ff', fillOpacity: zoomed ? 0.12 : 0.15 + 0.4 * w };
+      return { color: '#ff6b3d', weight: 1.5, fillColor: `hsl(${20 + 30 * (1 - w)},100%,55%)`, fillOpacity: zoomed ? 0.06 : 0.15 + 0.5 * w }; },
+    onEachFeature: (f, l) => { const k = iso(f.properties); countryBounds[k] = mainBounds(l);
+      l.bindTooltip(`${countryName(k)} — ${Math.round(weights[k] * 100)}%`); }
+  }).addTo(map);
+  renderPanel();
+  const framed = Object.keys(weights).filter(k => countryBounds[k] && weights[k] >= 0.1 * Math.max(...Object.values(weights))); // ignore long-shot countries when framing
+  if (framed.length && !areaLayers.getLayers().length) fly(framed.reduce((b, k) => b.extend(countryBounds[k]), L.latLngBounds(countryBounds[framed[0]])), FLY.country);
+}
+
+function showArea({ bbox: [s, w, n, e], label = 'zone', alt }) {
+  const bounds = L.latLngBounds([[s, w], [n, e]]);
+  if (alt) { // alternative lead: drawn and listed, but the camera stays on the main hypothesis
+    const old = steps.findIndex(x => x.alt && x.label === label);
+    if (old >= 0) { steps[old].layer.remove(); steps.splice(old, 1); }
+    const layer = L.rectangle(bounds, { color: '#3dd6ff', weight: 2, fillOpacity: 0.06, dashArray: '2 6' })
+      .bindTooltip('Alt : ' + label, { permanent: true, direction: 'top' }).addTo(altLayers);
+    steps.push({ label, bounds, alt: true, layer });
+    return renderPanel();
+  }
+  areaLayers.eachLayer(l => l.setStyle({ opacity: 0.3, fillOpacity: 0.03 })); // fade previous zones
+  L.rectangle(bounds, { color: '#ffd23d', weight: 2, fillOpacity: 0.08, dashArray: '6 4' })
+    .bindTooltip(label, { permanent: true, direction: 'top' }).addTo(areaLayers);
+  countryLayer?.setStyle(countryLayer.options.style); // re-run the style rule now that a zone exists: fades leaders, keeps runner-ups visible
+  steps.push({ label, bounds });
+  renderPanel();
+  setStatus('🔍 ' + label);
+  fly(bounds, FLY.area);
+}
+
+// A country that leaves the list takes its clues with it; clues still pointing at a remaining country keep only those refs.
+function pruneClues() {
+  clues = clues.flatMap(c => {
+    const had = (c.for || []).length + (c.against || []).length;
+    const k = { ...c, for: (c.for || []).filter(cc => cc in weights), against: (c.against || []).filter(cc => cc in weights) };
+    return had && !(k.for.length + k.against.length) ? [] : [k];
+  });
+}
+
+// Frame the final point with the nearby landmarks; far anchors (a distant peak) stay listed but would zoom the map out too much.
+function fitFinal(duration = 1.5) {
+  if (!finalAt) return;
+  const here = L.latLng(finalAt.lat, finalAt.lon);
+  const near = landmarks.filter(l => here.distanceTo([l.lat, l.lon]) < 2000).map(l => [l.lat, l.lon]);
+  fly(near.length ? L.latLngBounds([here, ...near]).pad(0.25) : here.toBounds(Math.max(4 * (finalAt.radius_m || 50), 200)), duration, { maxZoom: 18 });
+}
+
+// Cut a box out of the uploaded photo. Box is fractions 0-1; values > 1 are taken as pixels.
+const srcImg = new Image();
+function cropOf(box, ctxPad = 0.15) {
+  if (!Array.isArray(box) || box.length !== 4 || !srcImg.naturalWidth) return null;
+  const W = srcImg.naturalWidth, H = srcImg.naturalHeight, frac = box.every(v => v <= 1);
+  let [x0, y0, x1, y1] = frac ? [box[0] * W, box[1] * H, box[2] * W, box[3] * H] : box;
+  const px = (x1 - x0) * ctxPad, py = (y1 - y0) * ctxPad; // a little context around the object
+  x0 = Math.max(0, x0 - px); y0 = Math.max(0, y0 - py); x1 = Math.min(W, x1 + px); y1 = Math.min(H, y1 + py);
+  if (x1 - x0 < 2 || y1 - y0 < 2) return null;
+  const scale = Math.min(1, 600 / (x1 - x0)), c = document.createElement('canvas');
+  c.width = Math.round((x1 - x0) * scale); c.height = Math.round((y1 - y0) * scale);
+  c.getContext('2d').drawImage(srcImg, x0, y0, x1 - x0, y1 - y0, 0, 0, c.width, c.height);
+  return c.toDataURL('image/jpeg', 0.85);
+}
+
+// ---------- focus cards (targeted digs on a boxed element) ----------
+const VERDICT = { useful: 'Piste utile — on creuse', weak: 'Indice faible', irrelevant: 'Peu pertinent', pending: 'Analyse de l\'élément…' };
+const focuses = {}; // fid -> { box, note, data, done, card }
+function renderFocus(fid) {
+  const f = focuses[fid], d = f.data || {}, v = d.verdict in VERDICT ? d.verdict : (f.done ? 'irrelevant' : 'pending');
+  const chain = [d.element && (d.reads ? `${d.element} « ${d.reads} »` : d.element), ...(d.chain || [])].filter(Boolean);
+  f.card.innerHTML = `<header><span>Élément sélectionné</span><button aria-label="Fermer">×</button></header>
+    ${f.crop ? `<img src="${f.crop}" alt="Zone sélectionnée">` : ''}
+    ${chain.length ? `<div class="chain">${chain.map(c => `<span>${esc(c)}</span>`).join('<i>→</i>')}</div>` : ''}
+    <span class="verdict ${v}">${f.done && !f.data ? 'Terminé sans verdict' : VERDICT[v]}</span>
+    ${d.summary ? `<p>${esc(d.summary)}</p>` : f.note ? `<p>« ${esc(f.note)} »</p>` : ''}`;
+  f.card.querySelector('header button').onclick = () => { f.controller.abort(); f.card.remove(); };
+}
+
+// ---------- marker handling ----------
+function handle(m, fid) {
+  if (m.type === 'countries') { weights = Object.fromEntries(Object.entries(m.weights || {}).filter(([, w]) => w > 0)); pruneClues(); return showCountries(); }
+  else if (m.type === 'area') showArea(m);
+  else if (m.type === 'clue') {
+    if (!clues.some(c => c.text === m.text)) { clues.push(m); renderPanel(); } // several passes can repeat a clue
+  }
+  else if (m.type === 'focus' && focuses[fid]) { focuses[fid].data = m; renderFocus(fid); }
+  else if (m.type === 'landmark') {
+    if (!Number.isFinite(m.lat) || !Number.isFinite(m.lon) || landmarks.some(l => l.label === m.label)) return;
+    landmarks.push(m);
+    L.marker([m.lat, m.lon], { icon: L.divIcon({ className: 'lm-icon', html: esc(m.emoji || '📌'), iconSize: [32, 32] }) })
+      .bindTooltip(esc(m.label), { permanent: true, direction: 'right', offset: [16, 0] })
+      .bindPopup(() => { const src = cropOf(m.box); return `<div class="lm-pop">${src ? `<img src="${src}" alt="${esc(m.label)} sur la photo">` : ''}<b>${esc(m.emoji || '')} ${esc(m.label)}</b><br>${esc(m.why || '')}</div>`; }, { maxWidth: 320 })
+      .addTo(landmarkLayer);
+    renderPanel();
+    fitFinal();
+  }
+  else if (m.type === 'final') {
+    finalLayer.clearLayers();
+    L.circle([m.lat, m.lon], { radius: m.radius_m || 50, color: '#3ddc84', fillOpacity: 0.25 }).addTo(finalLayer);
+    L.marker([m.lat, m.lon]).bindPopup(esc(m.label || '')).addTo(finalLayer).openPopup();
+    finalAt = m; fitFinal(FLY.final);
+    setStatus('📍 Localisation trouvée');
+    showResult(`<b>${esc(m.label)}</b><br>${m.lat.toFixed(6)}, ${m.lon.toFixed(6)} ± ${esc(m.radius_m)} m<br>Confiance : ${esc(m.confidence || '?')}
+      <br><a style="color:var(--accent)" target="_blank" rel="noopener" href="https://www.google.com/maps?q=${m.lat},${m.lon}">Ouvrir dans Google Maps</a>`);
+  }
+  else if (m.type === 'range') {
+    finalLayer.clearLayers();
+    const style = { color: '#a77bff', weight: 2, fillOpacity: 0.2, dashArray: '4 4' };
+    const shape = m.shape === 'polygon' ? L.polygon(m.points, style) : L.circle([m.lat, m.lon], { ...style, radius: m.radius_m });
+    shape.bindTooltip(esc(m.label || 'périmètre'), { permanent: true }).addTo(finalLayer);
+    fly(shape.getBounds(), FLY.area);
+    setStatus('🟣 Pas de point exact — périmètre probable');
+    showResult(`<b>${esc(m.label || 'Périmètre')}</b>${m.radius_m ? `<br>Rayon ≈ ${(m.radius_m / 1000).toFixed(1)} km` : ''}<br><i>Manque : ${esc(m.missing || '?')}</i>`);
+  }
+  else if (m.type === 'meta') return showMeta(m);
+  else if (m.type === 'push') setStatus('⛏️ Relance pour affiner encore (' + m.n + ')');
+  else if (m.type === 'done') {
+    if (fid) { focuses[fid].done = true; renderFocus(fid); return; }
+    if (!finalLayer.getLayers().length) setStatus(areaLayers.getLayers().length ? '🟡 Meilleure zone affichée' : '❌ Pas de localisation');
+  }
+}
+
+// Steps that move the map play one at a time: overlapping flyTo calls break Leaflet's zoom animation.
+const MOVES = new Set(['countries', 'area', 'final', 'range', 'landmark']);
+let queue = Promise.resolve(), runId = 0;
+const settle = () => new Promise(ok => { map.once('moveend', ok); setTimeout(ok, FLY.final * 1000 + 1000); }).then(() => new Promise(ok => setTimeout(ok, PAUSE_MS)));
+let received = []; // every message received, replayed on import
+function enqueue(m, fid) {
+  const id = runId, tag = fid ? 'focus ' + fid : '';
+  received.push(fid ? { m, fid } : { m });
+  // the terminal shows the raw stream live; the map replays it at animation pace
+  if (m.type === 'tool') term(m.text, 'tool', tag);
+  else if (m.type === 'log' || m.type === 'error') term(m.text, m.type, tag);
+  else if (m.type === 'done') term(`— terminé (code ${m.code})`, m.code ? 'error' : '', tag);
+  else if (m.type === 'push') term(`— relance ${m.n} pour affiner`, '', tag);
+  else if (m.type === 'meta') term(`— métadonnées : ${Object.keys(m.tags || {}).length} champs, ${m.gps ? `GPS ${m.gps.lat}, ${m.gps.lon}` : 'pas de GPS'}`, '', tag);
+  else term('@@GEO ' + JSON.stringify(m), 'marker', tag);
+  // metadata only moves the map when it holds GPS
+  if ((!MOVES.has(m.type) && !(m.type === 'meta' && m.gps)) || m.alt) { queue = queue.then(() => id === runId && handle(m, fid)); return; }
+  queue = queue.then(async () => {
+    if (id !== runId) return;
+    if (m.type === 'landmark' && !finalAt) return handle(m, fid); // nothing to reframe yet, so no animation to wait for
+    const moved = settle(); await handle(m, fid); await moved;
+  });
+}
+
+// One NDJSON stream from the server, fed into the queue
+async function stream(url, body, signal, fid) {
+  try {
+    const res = await fetch(url, { method: 'POST', headers: { 'Content-Type': body.type }, body, signal });
+    if (!res.ok) return term(await res.text(), 'error', fid ? 'focus ' + fid : '');
+    const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
+    let buf = '';
+    for (;;) {
+      const { value, done } = await reader.read(); if (done) break;
+      buf += value; const lines = buf.split('\n'); buf = lines.pop();
+      for (const l of lines) if (l) enqueue(JSON.parse(l), fid);
+    }
+  } catch (e) {
+    if (signal.aborted) return;
+    term(e.message, 'error');
+    if (fid) { focuses[fid].done = true; renderFocus(fid); } else setStatus('❌ Connexion au serveur perdue');
+  }
+}
+
+// ---------- main run ----------
+let controller = null, previewUrl = null, photo = null, focusSeq = 0;
+async function run(file) {
+  if (/\.json$/i.test(file.name) || file.type === 'application/json') return restore(file);
+  if (!/^image\/(png|jpeg|webp)$/.test(file.type)) return alert('PNG, JPEG ou WebP, ou un résultat .geosleuth.json');
+  reset(file);
+  setStatus('⏳ Analyse en cours (plusieurs minutes)…');
+  map.setView([25, 5], 2);
+  stream('/api/locate', file, controller.signal);
+}
+
+// Clear everything from the previous photo (aborting its runs, which makes the server clean them up) and show this one
+function reset(file) {
+  controller?.abort(); // closing the old request makes the server kill the old analysis and delete its files
+  Object.values(focuses).forEach(f => { f.controller.abort(); f.card.remove(); });
+  for (const k in focuses) delete focuses[k];
+  controller = new AbortController();
+  runId++; queue = Promise.resolve(); photo = file;
+  if (previewUrl) URL.revokeObjectURL(previewUrl);
+  previewUrl = URL.createObjectURL(file);
+  srcImg.src = $('thumb').src = $('vimg').src = previewUrl;
+  $('termBody').innerHTML = ''; $('metaBody').innerHTML = '<p class="none">Lecture des métadonnées…</p>'; $('metaCard').innerHTML = ''; metaLayer.clearLayers(); showResult('');
+  weights = {}; clues = []; steps = []; countryBounds = {}; landmarks = []; finalAt = null; renderPanel();
+  [areaLayers, altLayers, finalLayer, landmarkLayer].forEach(g => g.clearLayers()); if (countryLayer) map.removeLayer(countryLayer);
+  hideLanding();
+  $('panel').hidden = false; $('btnImage').disabled = $('btnTerm').disabled = $('btnSave').disabled = $('btnMeta').disabled = false;
+  received = []; focusSeq = 0;
+}
+
+// ---------- save / restore ----------
+const SAVE_VERSION = 1;
+const slug = t => String(t || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 60);
+$('btnSave').onclick = async () => {
+  if (!photo) return;
+  const dataUrl = await new Promise((ok, ko) => { const r = new FileReader(); r.onload = () => ok(r.result); r.onerror = ko; r.readAsDataURL(photo); });
+  // most precise place known: last main zone, else the leading country
+  const place = steps.filter(s => !s.alt).at(-1)?.label || (leader() && countryName(leader())) || 'inconnu';
+  const name = `${slug(photo.name.replace(/\.[^.]+$/, '')) || 'capture'}_${slug(place) || 'inconnu'}.geosleuth.json`;
+  const data = { app: 'geosleuth-web', version: SAVE_VERSION, savedAt: new Date().toISOString(),
+    photo: { name: photo.name, type: photo.type, dataUrl },
+    focuses: Object.fromEntries(Object.entries(focuses).map(([k, f]) => [k, { box: f.box, note: f.note }])), history: received };
+  const url = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: name });
+  a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('💾 Résultat enregistré : ' + name);
+};
+
+async function restore(file) {
+  let data;
+  try {
+    data = JSON.parse(await file.text());
+    if (data.app !== 'geosleuth-web' || !Array.isArray(data.history) || !/^data:image\/(png|jpeg|webp);base64,/.test(data.photo?.dataUrl)) throw 0;
+  } catch { return alert('Ce fichier n\'est pas un résultat GeoSleuth valide'); }
+  const blob = await (await fetch(data.photo.dataUrl)).blob();
+  reset(new File([blob], String(data.photo.name || 'capture.png'), { type: blob.type }));
+  await new Promise(ok => srcImg.complete ? ok() : srcImg.onload = ok); // crops need the decoded image
+  await worldReady;
+  setStatus('📂 Résultat importé');
+  for (const [k, f] of Object.entries(data.focuses || {})) {
+    const card = document.createElement('div'); card.className = 'fc glass'; $('focusCards').prepend(card);
+    focuses[k] = { box: f.box, note: f.note, card, crop: cropOf(f.box, 0.05), controller: new AbortController(), done: true };
+    focusSeq = Math.max(focusSeq, +k || 0);
+  }
+  instant = true;
+  for (const { m, fid } of data.history) {
+    if (!m || typeof m !== 'object') continue;
+    received.push(fid ? { m, fid } : { m });
+    const tag = fid ? 'focus ' + fid : '';
+    if (m.type === 'tool') term(String(m.text), 'tool', tag);
+    else if (m.type === 'log' || m.type === 'error') term(String(m.text), m.type, tag);
+    try { await handle(m, fid && focuses[fid] ? fid : undefined); } catch (e) { term('entrée ignorée : ' + e.message, 'error'); }
+  }
+  instant = false;
+  Object.keys(focuses).forEach(renderFocus);
+  if (!/Localisation|périmètre|Meilleure/.test($('status').textContent)) setStatus('📂 Résultat importé');
+  toast('📂 Résultat importé : ' + file.name);
+}
+
+// ---------- landing ----------
+function showLanding() { $('landing').hidden = false; $('landing').classList.remove('leaving'); $('landing').classList.toggle('modal', !!photo); $('drop').focus(); }
+function hideLanding() { $('landing').classList.add('leaving'); setTimeout(() => $('landing').hidden = true, 350); }
+$('drop').onclick = () => $('file').click();
+$('drop').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('file').click(); } };
+$('file').onchange = e => { e.target.files[0] && run(e.target.files[0]); e.target.value = ''; };
+document.addEventListener('dragover', e => { e.preventDefault(); $('drop').classList.add('over'); });
+document.addEventListener('dragleave', e => { if (!e.relatedTarget) $('drop').classList.remove('over'); });
+document.addEventListener('drop', e => { e.preventDefault(); $('drop').classList.remove('over'); e.dataTransfer.files[0] && run(e.dataTransfer.files[0]); });
+document.addEventListener('paste', e => { const f = [...e.clipboardData.files][0]; f && run(f); });
+$('btnNew').onclick = showLanding;
+// Ctrl+V only reaches the page once it has keyboard focus (after a fresh load it sits in the address bar): one click reads the clipboard directly.
+$('pasteBtn').onclick = async e => {
+  e.stopPropagation(); // don't open the file picker behind it
+  try {
+    for (const item of await navigator.clipboard.read()) {
+      const type = item.types.find(t => /^image\/(png|jpeg|webp)$/.test(t));
+      if (type) return run(new File([await item.getType(type)], 'clipboard.' + type.split('/')[1], { type }));
+    }
+    $('pasteMsg').textContent = 'Pas d\'image dans le presse-papiers';
+  } catch {
+    $('pasteMsg').textContent = 'Accès refusé : clique sur la page puis fais Ctrl+V';
+  }
+};
+$('landing').onclick = e => { if (e.target === $('landing') && photo) hideLanding(); };
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { if (!$('viewer').hidden) closeViewer(); else if (!$('landing').hidden && photo) hideLanding(); } });
+$('drop').focus();
+
+let toastTimer;
+function toast(text) { $('toast').textContent = text; $('toast').classList.add('show'); clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').classList.remove('show'), 3500); }
+
+// ---------- image viewer + box selection ----------
+let selBox = null;
+function openViewer() { $('viewer').hidden = false; $('focusNote').focus(); }
+function closeViewer() { $('viewer').hidden = true; }
+$('btnImage').onclick = openViewer; $('thumb').onclick = openViewer; $('vClose').onclick = closeViewer;
+$('viewer').onclick = e => { if (e.target === $('viewer')) closeViewer(); }; // block body: returning false from onclick would cancel the form submit
+function drawSel() {
+  $('sel').hidden = !selBox; $('focusGo').disabled = !selBox;
+  if (!selBox) return;
+  const [x0, y0, x1, y1] = selBox;
+  Object.assign($('sel').style, { left: x0 * 100 + '%', top: y0 * 100 + '%', width: (x1 - x0) * 100 + '%', height: (y1 - y0) * 100 + '%' });
+}
+// window listeners instead of pointer capture: a lingering capture on the stage swallowed the next click on the submit button
+$('stage').onpointerdown = e => {
+  e.preventDefault();
+  const r = $('vimg').getBoundingClientRect(), at = ev => [Math.min(1, Math.max(0, (ev.clientX - r.left) / r.width)), Math.min(1, Math.max(0, (ev.clientY - r.top) / r.height))];
+  const [sx, sy] = at(e);
+  const move = ev => { const [x, y] = at(ev); selBox = [Math.min(sx, x), Math.min(sy, y), Math.max(sx, x), Math.max(sy, y)]; drawSel(); };
+  const up = () => {
+    removeEventListener('pointermove', move); removeEventListener('pointerup', up);
+    if (selBox && (selBox[2] - selBox[0] < 0.01 || selBox[3] - selBox[1] < 0.01)) selBox = null; // a click, not a box
+    drawSel();
+  };
+  addEventListener('pointermove', move); addEventListener('pointerup', up);
+};
+$('focusForm').onsubmit = e => {
+  e.preventDefault();
+  if (!selBox || !photo) return;
+  const fid = ++focusSeq, box = selBox.map(v => +v.toFixed(4)), note = $('focusNote').value.trim();
+  const ctx = [Object.entries(weights).map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(', '),
+    steps.filter(s => !s.alt).at(-1)?.label, finalAt && `point: ${finalAt.label} (${finalAt.lat}, ${finalAt.lon})`].filter(Boolean).join(' | ');
+  const card = document.createElement('div'); card.className = 'fc glass'; $('focusCards').prepend(card);
+  focuses[fid] = { box, note, card, crop: cropOf(box, 0.05), controller: new AbortController() };
+  renderFocus(fid);
+  const q = new URLSearchParams({ focus: box.join(','), note, ctx });
+  stream('/api/locate?' + q, photo, focuses[fid].controller.signal, fid);
+  // visible acknowledgement, then hand over to the focus card
+  $('focusGo').textContent = '✓ Élément pris en compte'; $('focusGo').classList.add('sent'); $('focusGo').disabled = true;
+  toast('🔍 Élément pris en compte — analyse ciblée lancée');
+  setTimeout(() => {
+    closeViewer(); selBox = null; drawSel(); $('focusNote').value = '';
+    $('focusGo').textContent = 'Creuser cet élément'; $('focusGo').classList.remove('sent');
+  }, 900);
+};
+</script>
+</body>
+</html>
