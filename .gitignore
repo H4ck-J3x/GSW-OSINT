@@ -1,0 +1,4 @@
+# saved results embed the photo (and its GPS): never publish them by accident
+*.geosleuth.json
+node_modules/
+__pycache__/
